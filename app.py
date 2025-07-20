@@ -28,6 +28,7 @@ if st.sidebar.button("🗑️ Clear All POs & TOs"):
     for key in documents:
         documents[key].clear()
     st.sidebar.success("All records cleared.")
+    st.rerun()
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📘 FeedMe", "📙 NetSuite", "📗 POS",
@@ -63,6 +64,7 @@ with tab1:
             }
             po_list.append(po)
             st.success(f"PO {po_id} created.")
+            st.rerun()
 
     with st.expander("Create TO"):
         col1, col2, col3 = st.columns(3)
@@ -91,18 +93,23 @@ with tab1:
             }
             to_list.append(to)
             st.success(f"TO {to_id} created.")
+            st.rerun()
 
     st.subheader("POs in Draft")
     for po in po_list:
         if po["status"] == "Draft":
             st.write(f"{po['po_id']} ({po['outlet']})")
-            st.button(f"Submit PO {po['po_id']}", key=f"submit_po_{po['po_id']}", on_click=submit_po, args=(po,))
+            if st.button(f"Submit PO {po['po_id']}", key=f"submit_po_{po['po_id']}"):
+                submit_po(po)
+                st.rerun()
 
     st.subheader("TOs in Draft")
     for to in to_list:
         if to["status"] == "Draft":
             st.write(f"{to['to_id']} ({to['source']} ➜ {to['destination']})")
-            st.button(f"Submit TO {to['to_id']}", key=f"submit_to_{to['to_id']}", on_click=submit_to, args=(to,))
+            if st.button(f"Submit TO {to['to_id']}", key=f"submit_to_{to['to_id']}"):
+                submit_to(to)
+                st.rerun()
 
 # ---------------------------- TAB 2: NetSuite ----------------------------
 with tab2:
@@ -116,6 +123,7 @@ with tab2:
             if st.button(f"Approve PO {po['po_id']}", key=f"approve_po_{po['po_id']}"):
                 po["created_at"] = datetime.datetime.combine(approve_date, datetime.datetime.min.time()) if approve_date else datetime.datetime.now()
                 approve_po(po)
+                st.rerun()
 
     st.subheader("TOs for Approval")
     for to in to_list:
@@ -125,18 +133,51 @@ with tab2:
             if st.button(f"Approve TO {to['to_id']}", key=f"approve_to_{to['to_id']}"):
                 to["created_at"] = datetime.datetime.combine(approve_date, datetime.datetime.min.time()) if approve_date else datetime.datetime.now()
                 approve_to(to)
+                st.rerun()
 
     for idx, to in enumerate(to_list):
         if to["status"] == "Processing":
+            st.write(f"**{to['to_id']} - {to['source']} ➜ {to['destination']}**")
+
+            item = to["items"][0]
+            requested_qty = item["qty"]
+            received_qty = to.get("received_qty", 0)
+            fulfilled_qty = to.get("fulfilled_qty", 0)
+
+            actual_remaining = requested_qty - received_qty
+            if actual_remaining <= 0:
+                st.write("✅ Fully Fulfilled and Received")
+                continue
+
+            # Display summary line
+            st.markdown(
+                f"<span style='font-size: 14px;'>"
+                f"📦 <strong>Requested:</strong> {requested_qty} | "
+                f"✅ <strong>Fulfilled:</strong> {fulfilled_qty} | "
+                f"🔄 <strong>Remaining:</strong> {actual_remaining}"
+                f"</span>",
+                unsafe_allow_html=True
+            )
+
+            fulfill_qty = st.number_input(
+                f"Enter Fulfill Qty for {to['to_id']}",
+                min_value=1,
+                max_value=actual_remaining,
+                value=actual_remaining,
+                key=f"fulfill_qty_{to['to_id']}"
+            )
+
             fulfill_date = st.date_input(
-                f"Fulfill Date for {to['to_id']} (Optional)", 
-                value=None, 
+                f"Fulfill Date for {to['to_id']} (Optional)",
+                value=None,
                 key=f"fulfill_date_{to['to_id']}_{idx}"
             )
-            st.write(f"{to['to_id']} - {to['source']} ➜ {to['destination']}")
-            if st.button(f"Fulfill TO {to['to_id']}", key=f"fulfill_to_{to['to_id']}_{idx}"):
-                to["created_at"] = datetime.datetime.combine(fulfill_date, datetime.datetime.min.time()) if fulfill_date else datetime.datetime.now()
-                fulfill_to(to)
+
+            if st.button(f"Fulfill TO {to['to_id']}", key=f"fulfill_btn_{to['to_id']}"):
+                fulfill_to(to, fulfill_qty, fulfill_date)
+                st.rerun()
+
+
 
 
 # ---------------------------- TAB 3: POS ----------------------------
@@ -147,31 +188,52 @@ with tab3:
     for po in po_list:
         if po["status"] == "Receiving":
             st.write(f"{po['po_id']} - {po['outlet']}")
-            recv_date = st.date_input(f"Receive Date for {po['po_id']} (Optional)", value=None, key=f"recv_po_date_{po['po_id']}")
+            recv_date = st.date_input(f"Receive Date for {po['po_id']}", value=None, key=f"recv_po_date_{po['po_id']}")
             if st.button(f"Receive PO {po['po_id']}", key=f"recv_po_{po['po_id']}"):
                 receive_po(po, recv_date)
+                st.rerun()
 
     st.subheader("TOs in Receiving")
     for to in to_list:
         if to["status"] == "Receiving":
             st.write(f"{to['to_id']} - {to['destination']}")
-
             item = to["items"][0]
             sku = item["sku"]
-            total_qty = item["qty"]
+            requested_qty = item["qty"]
+            fulfilled_qty = to.get("fulfilled_qty", 0)
             received_qty = to.get("received_qty", 0)
-            remaining_qty = total_qty - received_qty
 
-            if remaining_qty <= 0:
-                st.write("✅ Fully Received")
+            remaining_to_receive = fulfilled_qty - received_qty
+
+            if remaining_to_receive <= 0:
+                st.write("✅ Awaiting Further Fulfillment")
                 continue
 
             qty_key = f"receive_qty_{to['to_id']}"
-            qty = st.number_input(f"Qty to receive for {to['to_id']}", min_value=1, max_value=remaining_qty, value=remaining_qty, key=qty_key)
-            recv_date = st.date_input(f"Receive Date for {to['to_id']} (Optional)", value=None, key=f"recv_to_date_{to['to_id']}")
+            receive_qty = st.number_input(
+                f"Qty to receive for {to['to_id']}",
+                min_value=1,
+                max_value=remaining_to_receive,
+                value=remaining_to_receive,
+                key=qty_key
+            )
+            recv_date = st.date_input(
+                f"Receive Date for {to['to_id']}",
+                value=None,
+                key=f"recv_to_date_{to['to_id']}"
+            )
 
             if st.button(f"Receive TO {to['to_id']}", key=f"recv_to_{to['to_id']}"):
-                receive_to(to, qty, recv_date)
+                receive_to(to, receive_qty, recv_date)
+
+                # 🔁 After receive, if still not fully received vs requested, fallback to Processing
+                total_received = to.get("received_qty", 0)
+                if total_received < requested_qty:
+                    to["status"] = "Processing"
+                else:
+                    to["status"] = "Completed"
+
+                st.rerun()
 
 # ---------------------------- TAB 4: Dashboard ----------------------------
 with tab4:
@@ -198,12 +260,22 @@ with tab4:
                     </div>""",
                     unsafe_allow_html=True
                 )
+
                 for item in doc["items"]:
                     st.markdown(f"- {item['sku']} x{item['qty']}")
+
+                # Show progress for TOs
+                if "to_id" in doc:
+                    fulfilled = doc.get("fulfilled_qty", 0)
+                    received = doc.get("received_qty", 0)
+                    total = doc["items"][0]["qty"]
+                    st.markdown(f"- ✅ Fulfilled: {fulfilled} / {total} | 📦 Received: {received} / {total}")
+
                 st.markdown(f"- 🕒 {doc['created_at'].strftime('%b %d %H:%M')}")
 
     show_status([p for p in po_list], "📦 All POs")
     show_status([t for t in to_list], "🚚 All TOs")
+
 
 # ---------------------------- TAB 5: Cost Summary ----------------------------
 with tab5:
