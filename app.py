@@ -41,15 +41,32 @@ with tab1:
     st.header("📘 FeedMe: PO / TO Actions")
 
     with st.expander("Create PO"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            outlet = st.selectbox("Outlet Name", [o for o in outlet_list if not o.startswith("Warehouse")])
-        with col2:
-            sku = st.selectbox("Item SKU", sku_list, key="po_sku")
-        with col3:
-            qty = st.number_input("Quantity", min_value=1, step=1, key="po_qty")
+        outlet = st.selectbox("Outlet Name", [o for o in outlet_list if not o.startswith("Warehouse")])
 
-        cost = st.number_input("Unit Cost (RM)", min_value=0.01, value=item_master.get(sku, 1.00), step=0.01, key="po_cost")
+        if "po_items" not in st.session_state:
+            st.session_state["po_items"] = [{"sku": sku_list[0], "qty": 1, "unit_cost": item_master.get(sku_list[0], 1.00)}]
+
+        def add_po_item():
+            st.session_state.po_items.append({"sku": sku_list[0], "qty": 1, "unit_cost": item_master.get(sku_list[0], 1.00)})
+
+        def remove_po_item():
+            if len(st.session_state.po_items) > 1:
+                st.session_state.po_items.pop()
+
+        for idx, item in enumerate(st.session_state.po_items):
+            col1, col2, col3 = st.columns([3,2,2])
+            with col1:
+                item["sku"] = st.selectbox(f"SKU #{idx+1}", sku_list, key=f"po_sku_{idx}")
+            with col2:
+                item["qty"] = st.number_input(f"Quantity #{idx+1}", min_value=1, step=1, key=f"po_qty_{idx}")
+            with col3:
+                item["unit_cost"] = st.number_input(f"Unit Cost #{idx+1}", min_value=0.01, value=item_master.get(item['sku'], 1.00), step=0.01, key=f"po_cost_{idx}")
+
+        col_add, col_remove = st.columns(2)
+        col_add.button("➕ Add Item", on_click=add_po_item, key="po_add_item")
+        col_remove.button("➖ Remove Item", on_click=remove_po_item, key="po_remove_item")
+
+
         po_date = st.date_input("PO Creation Date (Optional)", value=None, key="po_date", disabled=False)
 
         if st.button("Create PO"):
@@ -59,25 +76,43 @@ with tab1:
                 "po_id": po_id,
                 "outlet": outlet,
                 "status": "Draft",
-                "items": [{"sku": sku, "qty": qty, "unit_cost": cost}],
+                "items": [item.copy() for item in st.session_state.po_items],
                 "created_at": created_at
             }
             po_list.append(po)
+            st.session_state.po_items = [{"sku": sku_list[0], "qty": 1, "unit_cost": item_master.get(sku_list[0], 1.00)}]
             st.success(f"PO {po_id} created.")
             st.rerun()
 
-    with st.expander("Create TO"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            source = st.selectbox("Source", outlet_list, key="to_src")
-        with col2:
-            destination = st.selectbox("Destination", outlet_list, key="to_dest")
-        with col3:
-            if source == destination:
-                st.warning("Source and destination must be different.")
 
-        sku = st.selectbox("Item SKU", sku_list, key="to_sku")
-        qty = st.number_input("Quantity", min_value=1, step=1, key="to_qty")
+    with st.expander("Create TO"):
+        source = st.selectbox("Source", outlet_list, key="to_src")
+        destination = st.selectbox("Destination", outlet_list, key="to_dest")
+        if source == destination:
+            st.warning("Source and destination must be different.")
+
+        if "to_items" not in st.session_state:
+            st.session_state["to_items"] = [{"sku": sku_list[0], "qty": 1}]
+
+        def add_to_item():
+            st.session_state.to_items.append({"sku": sku_list[0], "qty": 1})
+
+        def remove_to_item():
+            if len(st.session_state.to_items) > 1:
+                st.session_state.to_items.pop()
+
+        for idx, item in enumerate(st.session_state.to_items):
+            col1, col2 = st.columns([3,2])
+            with col1:
+                item["sku"] = st.selectbox(f"SKU #{idx+1}", sku_list, key=f"to_sku_{idx}")
+            with col2:
+                item["qty"] = st.number_input(f"Quantity #{idx+1}", min_value=1, step=1, key=f"to_qty_{idx}")
+
+        col_add, col_remove = st.columns(2)
+        col_add.button("➕ Add Item", on_click=add_to_item, key="to_add_item")
+        col_remove.button("➖ Remove Item", on_click=remove_to_item, key="to_remove_item")
+
+
         to_date = st.date_input("TO Creation Date (Optional)", value=None, key="to_date", disabled=False)
 
         if st.button("Create TO") and source != destination:
@@ -88,10 +123,11 @@ with tab1:
                 "source": source,
                 "destination": destination,
                 "status": "Draft",
-                "items": [{"sku": sku, "qty": qty}],
+                "items": [item.copy() for item in st.session_state.to_items],
                 "created_at": created_at
             }
             to_list.append(to)
+            st.session_state.to_items = [{"sku": sku_list[0], "qty": 1}]
             st.success(f"TO {to_id} created.")
             st.rerun()
 
@@ -139,33 +175,43 @@ with tab2:
         if to["status"] == "Processing":
             st.write(f"**{to['to_id']} - {to['source']} ➜ {to['destination']}**")
 
-            item = to["items"][0]
-            requested_qty = item["qty"]
-            received_qty = to.get("received_qty", 0)
-            fulfilled_qty = to.get("fulfilled_qty", 0)
+            # Get fulfill_qty_dict from session state or create new
+            if f"fulfill_qty_dict_{to['to_id']}" not in st.session_state:
+                st.session_state[f"fulfill_qty_dict_{to['to_id']}"] = {item['sku']: 0 for item in to['items']}
 
-            actual_remaining = requested_qty - received_qty
-            if actual_remaining <= 0:
-                st.write("✅ Fully Fulfilled and Received")
-                continue
+            fulfill_qty_dict = st.session_state[f"fulfill_qty_dict_{to['to_id']}"]
 
-            # Display summary line
-            st.markdown(
-                f"<span style='font-size: 14px;'>"
-                f"📦 <strong>Requested:</strong> {requested_qty} | "
-                f"✅ <strong>Fulfilled:</strong> {fulfilled_qty} | "
-                f"🔄 <strong>Remaining:</strong> {actual_remaining}"
-                f"</span>",
-                unsafe_allow_html=True
-            )
+            requested = {item["sku"]: item["qty"] for item in to["items"]}
+            fulfilled = to.get("fulfilled_qty_dict", {item["sku"]: 0 for item in to["items"]})
+            received = to.get("received_qty_dict", {item["sku"]: 0 for item in to["items"]})
 
-            fulfill_qty = st.number_input(
-                f"Enter Fulfill Qty for {to['to_id']}",
-                min_value=1,
-                max_value=actual_remaining,
-                value=actual_remaining,
-                key=f"fulfill_qty_{to['to_id']}"
-            )
+            # Display item-wise status
+            for item in to["items"]:
+                sku = item["sku"]
+                req = requested[sku]
+                ful = fulfilled.get(sku, 0)
+                rec = received.get(sku, 0)
+                remaining = req - rec
+                st.markdown(
+                    f"<span style='font-size: 14px;'>"
+                    f"🔢 <strong>{sku}</strong>: "
+                    f"📦 <strong>Requested:</strong> {req} | "
+                    f"✅ <strong>Fulfilled:</strong> {ful} | "
+                    f"📥 <strong>Received:</strong> {rec} | "
+                    f"🔄 <strong>Remaining:</strong> {remaining}"
+                    f"</span>",
+                    unsafe_allow_html=True
+                )
+
+                # Fulfill input for this SKU
+                max_to_fulfill = req - ful
+                fulfill_qty_dict[sku] = st.number_input(
+                    f"Enter Fulfill Qty for {sku} in {to['to_id']}",
+                    min_value=0,
+                    max_value=max_to_fulfill,
+                    value=0,
+                    key=f"fulfill_qty_{to['to_id']}_{sku}"
+                )
 
             fulfill_date = st.date_input(
                 f"Fulfill Date for {to['to_id']} (Optional)",
@@ -174,7 +220,7 @@ with tab2:
             )
 
             if st.button(f"Fulfill TO {to['to_id']}", key=f"fulfill_btn_{to['to_id']}"):
-                fulfill_to(to, fulfill_qty, fulfill_date)
+                fulfill_to(to, fulfill_qty_dict.copy(), fulfill_date)
                 st.rerun()
 
 
@@ -197,26 +243,52 @@ with tab3:
     for to in to_list:
         if to["status"] == "Receiving":
             st.write(f"{to['to_id']} - {to['destination']}")
-            item = to["items"][0]
-            sku = item["sku"]
-            requested_qty = item["qty"]
-            fulfilled_qty = to.get("fulfilled_qty", 0)
-            received_qty = to.get("received_qty", 0)
+            fulfill_dict = to.get("fulfilled_qty_dict", {item["sku"]: 0 for item in to["items"]})
+            received_dict = to.get("received_qty_dict", {item["sku"]: 0 for item in to["items"]})
 
-            remaining_to_receive = fulfilled_qty - received_qty
+            # Check if there is anything left to receive for any SKU
+            any_to_receive = False
+            receive_qty_dict = {}
+            for item in to["items"]:
+                sku = item["sku"]
+                fulfilled = fulfill_dict.get(sku, 0)
+                received = received_dict.get(sku, 0)
+                remaining = fulfilled - received
 
-            if remaining_to_receive <= 0:
-                st.write("✅ Awaiting Further Fulfillment")
+                if remaining > 0:
+                    any_to_receive = True
+
+            if not any_to_receive:
+                st.success("✅ Awaiting Further Fulfillment")
                 continue
 
-            qty_key = f"receive_qty_{to['to_id']}"
-            receive_qty = st.number_input(
-                f"Qty to receive for {to['to_id']}",
-                min_value=1,
-                max_value=remaining_to_receive,
-                value=remaining_to_receive,
-                key=qty_key
-            )
+            # Receive inputs per SKU
+            for item in to["items"]:
+                sku = item["sku"]
+                fulfilled = fulfill_dict.get(sku, 0)
+                received = received_dict.get(sku, 0)
+                remaining = fulfilled - received
+
+                st.markdown(
+                    f"<span style='font-size: 14px;'>"
+                    f"🔢 <strong>{sku}</strong>: "
+                    f"✅ <strong>Fulfilled:</strong> {fulfilled} | "
+                    f"📥 <strong>Received:</strong> {received} | "
+                    f"🔄 <strong>To Receive:</strong> {remaining}"
+                    f"</span>",
+                    unsafe_allow_html=True
+                )
+
+                # Only allow positive to receive
+                if remaining > 0:
+                    receive_qty_dict[sku] = st.number_input(
+                        f"Qty to receive for {sku} in {to['to_id']}",
+                        min_value=0,
+                        max_value=remaining,
+                        value=0,
+                        key=f"receive_qty_{to['to_id']}_{sku}"
+                    )
+
             recv_date = st.date_input(
                 f"Receive Date for {to['to_id']}",
                 value=None,
@@ -224,16 +296,14 @@ with tab3:
             )
 
             if st.button(f"Receive TO {to['to_id']}", key=f"recv_to_{to['to_id']}"):
-                receive_to(to, receive_qty, recv_date)
-
-                # 🔁 After receive, if still not fully received vs requested, fallback to Processing
-                total_received = to.get("received_qty", 0)
-                if total_received < requested_qty:
-                    to["status"] = "Processing"
+                # Only pass SKUs with qty > 0
+                filtered_receive = {sku: qty for sku, qty in receive_qty_dict.items() if qty > 0}
+                if filtered_receive:
+                    receive_to(to, filtered_receive, recv_date)
+                    # Status update happens inside receive_to
+                    st.rerun()
                 else:
-                    to["status"] = "Completed"
-
-                st.rerun()
+                    st.warning("Enter at least one quantity to receive.")
 
 # ---------------------------- TAB 4: Dashboard ----------------------------
 with tab4:
@@ -403,12 +473,14 @@ with tab9:
                 st.write(f"Timestamp: {doc['timestamp']}")
                 st.write(f"Ref: {doc['ref']}")
                 st.write(f"Outlet: {doc['outlet']}")
-                st.write(f"SKU: {doc['sku']}")
-                st.write(f"Quantity: {doc['qty']}")
-                st.write(f"Unit Cost: RM {doc['unit_cost']:.2f}")
-                st.write(f"Total Cost: RM {doc['total_cost']:.2f}")
+                st.write("Items:")
+                st.table([{
+                    "SKU": item["sku"],
+                    "Quantity": item["qty"],
+                    "Unit Cost": f"RM {item.get('unit_cost', 0):.2f}",
+                    "Total Cost": f"RM {item.get('qty', 0) * item.get('unit_cost', 0):.2f}"
+                } for item in doc.get("items", [])])
 
-                # Embed PDF
                 pdf_base64 = doc_storage.get(doc["doc_id"])
                 if pdf_base64:
                     st.markdown(
