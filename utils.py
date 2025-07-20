@@ -12,18 +12,15 @@ item_master = {}
 sku_list = ["MILK2002", "BREAD1001"]
 outlet_list = ["OutletA", "OutletB", "Warehouse1", "Warehouse2"]
 
-# Set your warehouse name as per your outlet_list
-WAREHOUSE_NAME = "Warehouse1"  # Use the exact warehouse name from your system
-returns_inventory = {}  # key: (warehouse, sku), value: {qty, unit_cost, reasons: [str]}
-
-
-
-
 # Document stores
 doc_counters = {"PO": 0, "TO": 0, "DO": 0, "GRN": 0, "TN": 0, "RN": 0}
 documents = {"DO": [], "GRN": [], "TN": [], "RN": []}
 
 doc_storage = {}
+
+# Set your warehouse name as per your outlet_list
+WAREHOUSE_NAME = "Warehouse1"  # Use the exact warehouse name from your system
+returns_inventory = {}  # key: (warehouse, sku), value: {qty, unit_cost, reasons: [str]}
 
 # ID generators
 def generate_po_id():
