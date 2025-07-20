@@ -1,19 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from utils import (
-    WAREHOUSE_NAME,
-    returns_inventory,
-    inventory,
-    cost_history,
-    documents,
-    doc_storage,
-    process_stock_return,
-    generate_pdf,
-    generate_doc_id,
-    # Add more as needed (eg. functions like receive_po, receive_to, fulfill_to if used directly)
-)
-
+from utils import *
 
 
 st.set_page_config(page_title="PO / TO Automation System", layout="wide")
