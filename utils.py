@@ -92,19 +92,22 @@ def submit_to(to):
 
 def approve_to(to):
     to["status"] = "Processing"
+    to["fulfilled_qty"] = 0
+    to["received_qty"] = 0
 
-def fulfill_to(to):
+def fulfill_to(to, fulfill_qty, fulfill_date):
     item = to["items"][0]
-    sku, qty = item["sku"], item["qty"]
+    sku, requested_qty = item["sku"], item["qty"]
     source = to["source"]
     key = (source, sku)
 
-    if key not in inventory or inventory[key]["qty"] < qty:
+    if key not in inventory or inventory[key]["qty"] < fulfill_qty:
         to["status"] = "Error - Insufficient stock at source"
         return
 
     # Deduct from source
-    inventory[key]["qty"] -= qty
+    inventory[key]["qty"] -= fulfill_qty
+    to["fulfilled_qty"] += fulfill_qty
 
     # Log DO
     doc_id = generate_doc_id("DO")
@@ -115,29 +118,31 @@ def fulfill_to(to):
         "type": "DO",
         "outlet": source,
         "sku": sku,
-        "qty": qty,
+        "qty": fulfill_qty,
         "unit_cost": inventory[key]["unit_cost"],
-        "total_cost": qty * inventory[key]["unit_cost"]
+        "total_cost": fulfill_qty * inventory[key]["unit_cost"]
     })
-    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], source, sku, qty, inventory[key]["unit_cost"], "DO")
+    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], source, sku, fulfill_qty, inventory[key]["unit_cost"], "DO")
 
+    # Only allow receiving what has been fulfilled
     to["status"] = "Receiving"
-    to["received_qty"] = 0
 
-def receive_to(to, qty, date_override=None):
+def receive_to(to, receive_qty, date_override=None):
     item = to["items"][0]
     sku = item["sku"]
-    unit_cost = get_unit_cost((to["source"], sku))
+    requested_qty = item["qty"]
     key = (to["destination"], sku)
 
     if key not in inventory:
         inventory[key] = {"qty": 0, "unit_cost": 0}
 
+    unit_cost = get_unit_cost((to["source"], sku))
+
     # WAVG
     prev_qty = inventory[key]["qty"]
     prev_cost = inventory[key]["unit_cost"]
-    new_qty = prev_qty + qty
-    new_cost = ((prev_qty * prev_cost) + (qty * unit_cost)) / new_qty if new_qty else unit_cost
+    new_qty = prev_qty + receive_qty
+    new_cost = ((prev_qty * prev_cost) + (receive_qty * unit_cost)) / new_qty if new_qty else unit_cost
     inventory[key]["qty"] = new_qty
     inventory[key]["unit_cost"] = new_cost
 
@@ -146,9 +151,9 @@ def receive_to(to, qty, date_override=None):
         "timestamp": date_override or datetime.datetime.now(),
         "type": "TN",
         "sku": sku,
-        "qty": qty,
+        "qty": receive_qty,
         "unit_cost": unit_cost,
-        "total_cost": qty * unit_cost,
+        "total_cost": receive_qty * unit_cost,
         "outlet": to["destination"]
     })
 
@@ -161,16 +166,21 @@ def receive_to(to, qty, date_override=None):
         "type": "TN",
         "outlet": to["destination"],
         "sku": sku,
-        "qty": qty,
+        "qty": receive_qty,
         "unit_cost": unit_cost,
-        "total_cost": qty * unit_cost
+        "total_cost": receive_qty * unit_cost
     })
-    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], to["destination"], sku, qty, unit_cost, "TN")
+    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], to["destination"], sku, receive_qty, unit_cost, "TN")
 
     # Status tracking
-    to["received_qty"] = to.get("received_qty", 0) + qty
-    total = item["qty"]
-    to["status"] = "Completed" if to["received_qty"] >= total else "Processing"
+    to["received_qty"] = to.get("received_qty", 0) + receive_qty
+
+    if to["received_qty"] >= item["qty"]:
+        to["status"] = "Completed"
+    elif to["fulfilled_qty"] > to["received_qty"]:
+        to["status"] = "Receiving"
+    else:
+        to["status"] = "Processing"
 
 # Cost helper
 def get_unit_cost(key):
@@ -193,3 +203,4 @@ def generate_pdf(doc_id, ref, outlet, sku, qty, unit_cost, doc_type):
     pdf = buffer.getvalue()
     buffer.close()
     return base64.b64encode(pdf).decode("utf-8")
+
