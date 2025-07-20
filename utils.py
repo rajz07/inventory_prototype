@@ -12,9 +12,17 @@ item_master = {}
 sku_list = ["MILK2002", "BREAD1001"]
 outlet_list = ["OutletA", "OutletB", "Warehouse1", "Warehouse2"]
 
+# Set your warehouse name as per your outlet_list
+WAREHOUSE_NAME = "Warehouse1"  # Use the exact warehouse name from your system
+returns_inventory = {}  # key: (warehouse, sku), value: {qty, unit_cost, reasons: [str]}
+
+
+
+
 # Document stores
-doc_counters = {"PO": 0, "TO": 0, "DO": 0, "GRN": 0, "TN": 0}
-documents = {"DO": [], "GRN": [], "TN": []}
+doc_counters = {"PO": 0, "TO": 0, "DO": 0, "GRN": 0, "TN": 0, "RN": 0}
+documents = {"DO": [], "GRN": [], "TN": [], "RN": []}
+
 doc_storage = {}
 
 # ID generators
@@ -246,6 +254,8 @@ def generate_pdf(doc_id, ref, outlet, items, doc_type):
         p.drawString(220, y, str(qty))
         p.drawString(300, y, f"RM {unit_cost:.2f}")
         p.drawString(400, y, f"RM {total_cost:.2f}")
+        if item.get("reason"):
+            p.drawString(500, y, f"{item['reason']}")
         y -= 16
         if y < 50:  # Start new page if needed
             p.showPage()
@@ -255,3 +265,64 @@ def generate_pdf(doc_id, ref, outlet, items, doc_type):
     pdf = buffer.getvalue()
     buffer.close()
     return base64.b64encode(pdf).decode("utf-8")
+
+
+def process_stock_return(outlet, warehouse, return_items, date_override=None):
+    rn_items = []
+    for item in return_items:
+        sku = item["sku"]
+        qty = item["qty"]
+        reason = item["reason"]
+        key_outlet = (outlet, sku)
+        key_warehouse = (warehouse, sku)
+
+        # Deduct from outlet inventory
+        if key_outlet in inventory:
+            prev_qty = inventory[key_outlet]["qty"]
+            prev_cost = inventory[key_outlet]["unit_cost"]
+            new_qty = max(prev_qty - qty, 0)
+            inventory[key_outlet]["qty"] = new_qty
+        else:
+            prev_cost = 1.0  # fallback if missing
+
+        # Add to returns bucket in warehouse
+        if key_warehouse not in returns_inventory:
+            returns_inventory[key_warehouse] = {"qty": 0, "unit_cost": prev_cost, "reasons": []}
+        returns_inventory[key_warehouse]["qty"] += qty
+        returns_inventory[key_warehouse]["unit_cost"] = prev_cost  # keep last known cost
+        returns_inventory[key_warehouse]["reasons"].append(reason)
+
+        # --- AUDIT LOG ENTRY (add here) ---
+        cost_history.append({
+            "timestamp": date_override or datetime.datetime.now(),
+            "type": "RETURN",
+            "sku": sku,
+            "qty": qty,
+            "unit_cost": prev_cost,
+            "total_cost": qty * prev_cost,
+            "from": outlet,
+            "to": warehouse,
+            "reason": reason
+        })
+        # --- END AUDIT LOG ENTRY ---
+
+        rn_items.append({
+            "sku": sku,
+            "qty": qty,
+            "unit_cost": prev_cost,
+            "reason": reason
+        })
+
+    # Generate one RN document for this return
+    doc_id = generate_doc_id("RN")
+    documents["RN"].append({
+        "timestamp": date_override or datetime.datetime.now(),
+        "doc_id": doc_id,
+        "ref": f"{outlet}_to_{warehouse}",
+        "type": "RN",
+        "outlet": outlet,
+        "warehouse": warehouse,
+        "items": rn_items
+    })
+    doc_storage[doc_id] = generate_pdf(doc_id, f"{outlet}_to_{warehouse}", warehouse, rn_items, "RN")
+
