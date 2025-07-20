@@ -418,24 +418,80 @@ with tab6:
 
 # ---------------------------- TAB 7: Stock Balance ----------------------------
 with tab7:
-    st.header("📦 Outlet Stock Balance")
+    st.subheader("🗳️ Outlet Stock Balance (Manual Adjust)")
 
-    if not inventory:
-        st.info("No inventory records yet.")
+    selected_outlet = st.selectbox(
+        "Select Outlet/Warehouse to Adjust",
+        outlet_list,
+        key="manual_adjust_outlet"
+    )
+
+    # Collect all SKUs (union of all inventory for this outlet)
+    existing = [
+        (sku, values)
+        for (outlet, sku), values in inventory.items()
+        if outlet == selected_outlet
+    ]
+
+    sku_set = set([sku for sku, _ in existing] + sku_list)  # include all possible SKUs
+
+    if not sku_set:
+        st.info("No SKUs configured for this outlet yet.")
     else:
-        stock_df = []
-        for (outlet, sku), data in inventory.items():
-            stock_df.append({
-                "Outlet": outlet,
+        st.write("Edit stock balances and unit cost, then save to update:")
+
+        adjust_data = []
+        for sku in sorted(sku_set):
+            key = (selected_outlet, sku)
+            qty = inventory.get(key, {}).get("qty", 0)
+            cost = inventory.get(key, {}).get("unit_cost", 1.00)
+            col1, col2, col3 = st.columns([1, 2, 2])
+            with col1:
+                st.markdown(f"**{sku}**")
+            with col2:
+                new_qty = st.number_input(
+                    f"Qty_{selected_outlet}_{sku}",
+                    min_value=0,
+                    value=qty,
+                    step=1,
+                    key=f"adjust_qty_{selected_outlet}_{sku}"
+                )
+            with col3:
+                new_cost = st.number_input(
+                    f"UnitCost_{selected_outlet}_{sku}",
+                    min_value=0.00,
+                    value=cost,
+                    step=0.01,
+                    format="%.2f",
+                    key=f"adjust_cost_{selected_outlet}_{sku}"
+                )
+            adjust_data.append((sku, new_qty, new_cost))
+
+        if st.button("💾 Save Adjustments", key="save_adjustment_btn"):
+            for sku, new_qty, new_cost in adjust_data:
+                key = (selected_outlet, sku)
+                inventory[key] = {"qty": new_qty, "unit_cost": new_cost}
+            st.success(f"Stock balances for {selected_outlet} updated!")
+            st.rerun()
+            
+        # Summary table of current stock for the selected outlet
+        display_data = []
+        for sku in sorted(sku_set):
+            key = (selected_outlet, sku)
+            qty = inventory.get(key, {}).get("qty", 0)
+            cost = inventory.get(key, {}).get("unit_cost", 1.00)
+            display_data.append({
                 "SKU": sku,
-                "Quantity": data["qty"],
-                "Unit Cost (WAVG)": round(data["unit_cost"], 2),
-                "Total Value": round(data["qty"] * data["unit_cost"], 2)
+                "Quantity": qty,
+                "Unit Cost": f"RM {cost:.2f}",
+                "Total Cost": f"RM {qty * cost:.2f}"
             })
 
-        df = pd.DataFrame(stock_df)
-        df = df.sort_values(by=["Outlet", "SKU"])
-        st.dataframe(df, use_container_width=True)
+        if display_data:
+            st.markdown("**Items:**")
+            st.table(display_data)
+        else:
+            st.info("No SKUs available for this outlet yet.")
 
 # ---------------------------- TAB 8: Audit Log ----------------------------
 
