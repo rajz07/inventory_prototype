@@ -1,16 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from utils import (
-    inventory,
-    sku_list,
-    outlet_list,
-    WAREHOUSE_NAME,
-    returns_inventory,
-    cost_history,
-    process_stock_return,
-    # ...any other function or variable you use in app.py
-)
+from utils import *
 
 
 
