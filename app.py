@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import datetime
 from utils import *
+from utils import WAREHOUSE_NAME, returns_inventory
+
 
 st.set_page_config(page_title="PO / TO Automation System", layout="wide")
 st.title("📦 PO / TO Automation System")
