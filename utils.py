@@ -44,7 +44,9 @@ def approve_po(po):
 
 def receive_po(po, date_override=None):
     for item in po["items"]:
-        sku, qty, cost = item["sku"], item["qty"], item["unit_cost"]
+        sku = item["sku"]
+        qty = item["qty"]
+        cost = item["unit_cost"]
         outlet = po["outlet"]
         key = (outlet, sku)
 
@@ -58,7 +60,6 @@ def receive_po(po, date_override=None):
         inventory[key]["qty"] = new_qty
         inventory[key]["unit_cost"] = new_cost
 
-        # Log cost history
         cost_history.append({
             "timestamp": date_override or datetime.datetime.now(),
             "type": "GRN",
@@ -69,22 +70,20 @@ def receive_po(po, date_override=None):
             "outlet": outlet
         })
 
-        # GRN doc
-        doc_id = generate_doc_id("GRN")
-        documents["GRN"].append({
-            "timestamp": date_override or datetime.datetime.now(),
-            "doc_id": doc_id,
-            "ref": po["po_id"],
-            "type": "GRN",
-            "outlet": outlet,
-            "sku": sku,
-            "qty": qty,
-            "unit_cost": cost,
-            "total_cost": qty * cost
-        })
-        doc_storage[doc_id] = generate_pdf(doc_id, po["po_id"], outlet, sku, qty, cost, "GRN")
+    # Create one GRN doc per PO, with all items
+    doc_id = generate_doc_id("GRN")
+    documents["GRN"].append({
+        "timestamp": date_override or datetime.datetime.now(),
+        "doc_id": doc_id,
+        "ref": po["po_id"],
+        "type": "GRN",
+        "outlet": po["outlet"],
+        "items": po["items"]
+    })
+    doc_storage[doc_id] = generate_pdf(doc_id, po["po_id"], po["outlet"], po["items"], "GRN")
 
     po["status"] = "Completed"
+
 
 # TO flow
 def submit_to(to):
@@ -95,112 +94,164 @@ def approve_to(to):
     to["fulfilled_qty"] = 0
     to["received_qty"] = 0
 
-def fulfill_to(to, fulfill_qty, fulfill_date):
-    item = to["items"][0]
-    sku, requested_qty = item["sku"], item["qty"]
-    source = to["source"]
-    key = (source, sku)
+def fulfill_to(to, fulfill_qty_dict, fulfill_date):
+    do_items = []
 
-    if key not in inventory or inventory[key]["qty"] < fulfill_qty:
-        to["status"] = "Error - Insufficient stock at source"
-        return
+    for item in to["items"]:
+        sku = item["sku"]
+        requested_qty = item["qty"]
+        fulfill_qty = fulfill_qty_dict.get(sku, 0)
+        source = to["source"]
+        key = (source, sku)
 
-    # Deduct from source
-    inventory[key]["qty"] -= fulfill_qty
-    to["fulfilled_qty"] += fulfill_qty
+        if fulfill_qty <= 0:
+            continue
 
-    # Log DO
-    doc_id = generate_doc_id("DO")
-    documents["DO"].append({
-        "timestamp": datetime.datetime.now(),
-        "doc_id": doc_id,
-        "ref": to["to_id"],
-        "type": "DO",
-        "outlet": source,
-        "sku": sku,
-        "qty": fulfill_qty,
-        "unit_cost": inventory[key]["unit_cost"],
-        "total_cost": fulfill_qty * inventory[key]["unit_cost"]
-    })
-    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], source, sku, fulfill_qty, inventory[key]["unit_cost"], "DO")
+        if key not in inventory or inventory[key]["qty"] < fulfill_qty:
+            to["status"] = "Error - Insufficient stock at source"
+            continue
 
-    # Only allow receiving what has been fulfilled
+        # Deduct from source
+        inventory[key]["qty"] -= fulfill_qty
+        to["fulfilled_qty_dict"] = to.get("fulfilled_qty_dict", {})
+        to["fulfilled_qty_dict"][sku] = to["fulfilled_qty_dict"].get(sku, 0) + fulfill_qty
+
+        unit_cost = inventory[key]["unit_cost"]
+
+        do_items.append({
+            "sku": sku,
+            "qty": fulfill_qty,
+            "unit_cost": unit_cost,
+            "total_cost": fulfill_qty * unit_cost
+        })
+
+    # Create one DO doc per TO fulfillment event, with all items
+    if do_items:
+        doc_id = generate_doc_id("DO")
+        documents["DO"].append({
+            "timestamp": fulfill_date or datetime.datetime.now(),
+            "doc_id": doc_id,
+            "ref": to["to_id"],
+            "type": "DO",
+            "outlet": to["source"],
+            "items": do_items
+        })
+        doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], to["source"], do_items, "DO")
+
     to["status"] = "Receiving"
 
-def receive_to(to, receive_qty, date_override=None):
-    item = to["items"][0]
-    sku = item["sku"]
-    requested_qty = item["qty"]
-    key = (to["destination"], sku)
 
-    if key not in inventory:
-        inventory[key] = {"qty": 0, "unit_cost": 0}
 
-    unit_cost = get_unit_cost((to["source"], sku))
+def receive_to(to, receive_qty_dict, date_override=None):
+    tn_items = []
 
-    # WAVG
-    prev_qty = inventory[key]["qty"]
-    prev_cost = inventory[key]["unit_cost"]
-    new_qty = prev_qty + receive_qty
-    new_cost = ((prev_qty * prev_cost) + (receive_qty * unit_cost)) / new_qty if new_qty else unit_cost
-    inventory[key]["qty"] = new_qty
-    inventory[key]["unit_cost"] = new_cost
+    for item in to["items"]:
+        sku = item["sku"]
+        requested_qty = item["qty"]
+        receive_qty = receive_qty_dict.get(sku, 0)
+        key = (to["destination"], sku)
 
-    # Cost history
-    cost_history.append({
-        "timestamp": date_override or datetime.datetime.now(),
-        "type": "TN",
-        "sku": sku,
-        "qty": receive_qty,
-        "unit_cost": unit_cost,
-        "total_cost": receive_qty * unit_cost,
-        "outlet": to["destination"]
-    })
+        if receive_qty <= 0:
+            continue
 
-    # TN doc
-    doc_id = generate_doc_id("TN")
-    documents["TN"].append({
-        "timestamp": date_override or datetime.datetime.now(),
-        "doc_id": doc_id,
-        "ref": to["to_id"],
-        "type": "TN",
-        "outlet": to["destination"],
-        "sku": sku,
-        "qty": receive_qty,
-        "unit_cost": unit_cost,
-        "total_cost": receive_qty * unit_cost
-    })
-    doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], to["destination"], sku, receive_qty, unit_cost, "TN")
+        if key not in inventory:
+            inventory[key] = {"qty": 0, "unit_cost": 0}
 
-    # Status tracking
-    to["received_qty"] = to.get("received_qty", 0) + receive_qty
+        unit_cost = get_unit_cost((to["source"], sku))
 
-    if to["received_qty"] >= item["qty"]:
-        to["status"] = "Completed"
-    elif to["fulfilled_qty"] > to["received_qty"]:
-        to["status"] = "Receiving"
-    else:
-        to["status"] = "Processing"
+        prev_qty = inventory[key]["qty"]
+        prev_cost = inventory[key]["unit_cost"]
+        new_qty = prev_qty + receive_qty
+        new_cost = ((prev_qty * prev_cost) + (receive_qty * unit_cost)) / new_qty if new_qty else unit_cost
+        inventory[key]["qty"] = new_qty
+        inventory[key]["unit_cost"] = new_cost
+
+        cost_history.append({
+            "timestamp": date_override or datetime.datetime.now(),
+            "type": "TN",
+            "sku": sku,
+            "qty": receive_qty,
+            "unit_cost": unit_cost,
+            "total_cost": receive_qty * unit_cost,
+            "outlet": to["destination"]
+        })
+
+        to["received_qty_dict"] = to.get("received_qty_dict", {})
+        to["received_qty_dict"][sku] = to["received_qty_dict"].get(sku, 0) + receive_qty
+
+        tn_items.append({
+            "sku": sku,
+            "qty": receive_qty,
+            "unit_cost": unit_cost,
+            "total_cost": receive_qty * unit_cost
+        })
+
+    # Create one TN doc per TO receive event, with all items
+    if tn_items:
+        doc_id = generate_doc_id("TN")
+        documents["TN"].append({
+            "timestamp": date_override or datetime.datetime.now(),
+            "doc_id": doc_id,
+            "ref": to["to_id"],
+            "type": "TN",
+            "outlet": to["destination"],
+            "items": tn_items
+        })
+        doc_storage[doc_id] = generate_pdf(doc_id, to["to_id"], to["destination"], tn_items, "TN")
+
+    # After loop, check if all items are received
+    all_received = True
+    for item in to["items"]:
+        sku = item["sku"]
+        requested = item["qty"]
+        received = to.get("received_qty_dict", {}).get(sku, 0)
+        if received < requested:
+            all_received = False
+            break
+
+    to["status"] = "Completed" if all_received else "Processing"
+
+
 
 # Cost helper
 def get_unit_cost(key):
     return inventory.get(key, {}).get("unit_cost", 1.0)
 
 # PDF generation
-def generate_pdf(doc_id, ref, outlet, sku, qty, unit_cost, doc_type):
+def generate_pdf(doc_id, ref, outlet, items, doc_type):
     buffer = BytesIO()
     p = canvas.Canvas(buffer)
+    p.setFont("Helvetica-Bold", 14)
     p.drawString(100, 800, f"{doc_type} DOCUMENT")
+    p.setFont("Helvetica", 12)
     p.drawString(100, 780, f"Document ID: {doc_id}")
-    p.drawString(100, 760, f"Reference: {ref}")
-    p.drawString(100, 740, f"Outlet: {outlet}")
-    p.drawString(100, 720, f"SKU: {sku}")
-    p.drawString(100, 700, f"Quantity: {qty}")
-    p.drawString(100, 680, f"Unit Cost: RM {unit_cost:.2f}")
-    p.drawString(100, 660, f"Total Cost: RM {qty * unit_cost:.2f}")
+    p.drawString(100, 765, f"Reference: {ref}")
+    p.drawString(100, 750, f"Outlet: {outlet}")
+
+    y = 720
+    p.setFont("Helvetica-Bold", 11)
+    p.drawString(100, y, "SKU")
+    p.drawString(220, y, "Qty")
+    p.drawString(300, y, "Unit Cost")
+    p.drawString(400, y, "Total Cost")
+    y -= 18
+    p.setFont("Helvetica", 11)
+
+    for item in items:
+        sku = item['sku']
+        qty = item['qty']
+        unit_cost = item.get('unit_cost', 0)
+        total_cost = qty * unit_cost
+        p.drawString(100, y, str(sku))
+        p.drawString(220, y, str(qty))
+        p.drawString(300, y, f"RM {unit_cost:.2f}")
+        p.drawString(400, y, f"RM {total_cost:.2f}")
+        y -= 16
+        if y < 50:  # Start new page if needed
+            p.showPage()
+            y = 800
     p.showPage()
     p.save()
     pdf = buffer.getvalue()
     buffer.close()
     return base64.b64encode(pdf).decode("utf-8")
-
