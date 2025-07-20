@@ -304,6 +304,48 @@ with tab3:
                     st.rerun()
                 else:
                     st.warning("Enter at least one quantity to receive.")
+                    
+    st.subheader("🔄 Outlet Stock Return to Warehouse")
+
+    # Only non-warehouse outlets
+    pos_outlets = [o for o in outlet_list if not o.lower().startswith("warehouse")]
+    return_outlet = st.selectbox("Select Outlet for Return", pos_outlets, key="ret_outlet")
+
+    warehouse = WAREHOUSE_NAME  # define somewhere, match your system's warehouse name
+
+    # Collect all SKUs for this outlet
+    outlet_skus = [sku for (out, sku) in inventory if out == return_outlet]
+    if not outlet_skus:
+        st.info("No SKUs in this outlet.")
+    else:
+        st.markdown("**Enter quantities and reasons to return:**")
+        return_items = []
+        for sku in sorted(outlet_skus):
+            key = (return_outlet, sku)
+            bal = inventory.get(key, {}).get("qty", 0)
+            unit_cost = inventory.get(key, {}).get("unit_cost", 1.0)
+            col1, col2, col3 = st.columns([2, 2, 4])
+            with col1:
+                st.markdown(f"**{sku}**  \nBalance: {bal}")
+            with col2:
+                ret_qty = st.number_input(
+                    f"Qty to return for {sku}", min_value=0, max_value=bal, value=0, step=1, key=f"ret_qty_{sku}"
+                )
+            with col3:
+                reason = st.text_input(
+                    f"Reason for {sku}", value="", key=f"ret_reason_{sku}"
+                )
+            if ret_qty > 0 and reason.strip():
+                return_items.append({"sku": sku, "qty": ret_qty, "reason": reason})
+
+        if st.button("Submit Return", key="submit_return_btn"):
+            if return_items:
+                process_stock_return(return_outlet, warehouse, return_items)
+                st.success("Stock return submitted!")
+                st.rerun()
+            else:
+                st.warning("Enter quantity and reason for at least one SKU to return.")
+
 
 # ---------------------------- TAB 4: Dashboard ----------------------------
 with tab4:
@@ -363,7 +405,7 @@ with tab5:
         start_date = col1.date_input("Start Date", min_date)
         end_date = col2.date_input("End Date", max_date)
 
-        outlet_filter = st.multiselect("Outlet Filter", df["outlet"].unique())
+        outlet_filter = st.multiselect("Outlet Filter", df.get("outlet", df.get("from")).unique())
         sku_filter = st.multiselect("SKU Filter", df["sku"].unique())
 
         mask = (df["timestamp"].dt.date >= start_date) & (df["timestamp"].dt.date <= end_date)
@@ -487,16 +529,47 @@ with tab7:
                 "Total Cost": f"RM {qty * cost:.2f}"
             })
 
+        # Summary table of current stock for the selected outlet
+        display_data = []
+        for sku in sorted(sku_set):
+            key = (selected_outlet, sku)
+            qty = inventory.get(key, {}).get("qty", 0)
+            cost = inventory.get(key, {}).get("unit_cost", 1.00)
+            display_data.append({
+                "SKU": sku,
+                "Quantity": qty,
+                "Unit Cost": f"RM {cost:.2f}",
+                "Total Cost": f"RM {qty * cost:.2f}"
+            })
+
         if display_data:
             st.markdown("**Items:**")
             st.table(display_data)
         else:
             st.info("No SKUs available for this outlet yet.")
 
-# ---------------------------- TAB 8: Audit Log ----------------------------
+        # --- Show Returns Inventory Table Only for Warehouse ---
+        if selected_outlet == WAREHOUSE_NAME:
+            st.subheader("Warehouse Returns Inventory")
+            warehouse_returns = []
+            for (wh, sku), val in returns_inventory.items():
+                if wh == WAREHOUSE_NAME:
+                    warehouse_returns.append({
+                        "SKU": sku,
+                        "Qty": val["qty"],
+                        "Unit Cost": f"RM {val['unit_cost']:.2f}",
+                        "Total Value": f"RM {val['qty'] * val['unit_cost']:.2f}",
+                        "Reasons": ", ".join(val["reasons"])
+                    })
+            if warehouse_returns:
+                st.table(warehouse_returns)
+            else:
+                st.info("No returned stock yet.")
+
+
+
 
 with tab8:
- 
     st.header("📒 Detailed Cost Audit Log")
 
     if not cost_history:
@@ -506,15 +579,25 @@ with tab8:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values(by="timestamp", ascending=False)
 
-        outlets = df["outlet"].unique()
-        for outlet in outlets:
-            outlet_data = df[df["outlet"] == outlet]
-            with st.expander(f"{outlet}", expanded=False):
-                display_df = outlet_data[["timestamp", "type", "sku", "qty", "unit_cost", "total_cost"]].copy()
-                display_df.columns = ["Timestamp", "Type", "SKU", "Quantity", "Unit Cost", "Total Cost"]
-                display_df["Unit Cost"] = display_df["Unit Cost"].apply(lambda x: f"RM {x:.2f}")
-                display_df["Total Cost"] = display_df["Total Cost"].apply(lambda x: f"RM {x:.2f}")
-                st.dataframe(display_df, use_container_width=True)
+        # If you want to group by outlet (source), otherwise just show all
+        if "outlet" in df.columns:
+            outlets = df["outlet"].unique()
+            for outlet in outlets:
+                outlet_data = df[df["outlet"] == outlet]
+                with st.expander(f"{outlet}", expanded=False):
+                    # Add missing columns safely
+                    for col in ["from", "to", "reason"]:
+                        if col not in outlet_data.columns:
+                            outlet_data[col] = ""
+                    display_df = outlet_data[["timestamp", "type", "sku", "qty", "unit_cost", "total_cost", "from", "to", "reason"]].copy()
+                    display_df.columns = ["Timestamp", "Type", "SKU", "Quantity", "Unit Cost", "Total Cost", "From", "To", "Reason"]
+                    display_df["Unit Cost"] = display_df["Unit Cost"].apply(lambda x: f"RM {x:.2f}")
+                    display_df["Total Cost"] = display_df["Total Cost"].apply(lambda x: f"RM {x:.2f}")
+                    st.dataframe(display_df, use_container_width=True)
+        else:
+            # fallback if no "outlet" field
+            st.dataframe(df)
+
 
 
 # ---------------------------- TAB 9: Document Viewer ----------------------------
@@ -543,3 +626,26 @@ with tab9:
                         f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="700" height="400" type="application/pdf"></iframe>',
                         unsafe_allow_html=True
                     )
+                    
+                    
+    for doc_type in ["GRN", "DO", "TN", "RN"]:
+        st.subheader(f"{doc_type} Records")
+        for doc in documents.get(doc_type, []):
+            with st.expander(f"{doc['doc_id']} - {doc['ref']}"):
+                st.write(f"Timestamp: {doc['timestamp']}")
+                st.write(f"Outlet: {doc.get('outlet', '')}")
+                st.write(f"Warehouse: {doc.get('warehouse', '')}")
+                st.write("Items:")
+                st.table([{
+                    "SKU": item["sku"],
+                    "Quantity": item["qty"],
+                    "Unit Cost": f"RM {item.get('unit_cost', 0):.2f}",
+                    "Reason": item.get("reason", "")
+                } for item in doc.get("items", [])])
+                pdf_base64 = doc_storage.get(doc["doc_id"])
+                if pdf_base64:
+                    st.markdown(
+                        f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="700" height="400" type="application/pdf"></iframe>',
+                        unsafe_allow_html=True
+                    )
+
